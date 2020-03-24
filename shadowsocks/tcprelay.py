@@ -987,6 +987,7 @@ class TCPRelayHandler(object):
                     logging.error("exception from %s:%d" % (self._client_address[0], self._client_address[1]))
                     self.destroy()
                     return
+                self._server.add_transfer_d(self._user, len(data))
             else:
                 if self._encrypt_correct:
                     data = self._protocol.server_pre_encrypt(data)

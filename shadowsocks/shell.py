@@ -89,7 +89,7 @@ def check_config(config, is_local):
         # no need to specify configuration for daemon stop
         return
 
-    if is_local and not config.get('password', None):
+    if is_local and config.get('password') is None and config.get('server_list') is None:
         logging.error('password not specified')
         print_help(is_local)
         sys.exit(2)
@@ -231,6 +231,9 @@ def get_config(is_local):
         print_help(is_local)
         sys.exit(2)
 
+    return normalize_config(config, is_local)
+
+def normalize_config(config, is_local):
     config['password'] = to_bytes(config.get('password', b''))
     config['method'] = to_str(config.get('method', 'aes-256-cfb'))
     config['protocol'] = to_str(config.get('protocol', 'origin'))
@@ -252,11 +255,11 @@ def get_config(is_local):
     config['local_address'] = to_str(config.get('local_address', '127.0.0.1'))
     config['local_port'] = config.get('local_port', 1080)
     if is_local:
-        if config.get('server', None) is None:
+        if config.get('server') is None and config.get('server_list') is None:
             logging.error('server addr not specified')
             print_local_help()
             sys.exit(2)
-        else:
+        elif config.get('server') is not None:
             config['server'] = to_str(config['server'])
     else:
         config['server'] = to_str(config.get('server', '0.0.0.0'))

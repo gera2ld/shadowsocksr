@@ -32,5 +32,6 @@ htmlcov
 
 # Ignore user config
 user-config.json
+user-config-list.json
 userapiconfig.py
 usermysql.json

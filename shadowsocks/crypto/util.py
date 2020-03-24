@@ -20,6 +20,9 @@ from __future__ import absolute_import, division, print_function, \
 import os
 import logging
 
+DYLD_LIBRARY_PATH = os.environ.get('KEEP_DYLD_LIBRARY_PATH')
+if os.environ.get('DYLD_LIBRARY_PATH') is None and DYLD_LIBRARY_PATH is not None:
+    os.environ['DYLD_LIBRARY_PATH'] = DYLD_LIBRARY_PATH
 
 def find_library_nt(name):
     # modified from ctypes.util
