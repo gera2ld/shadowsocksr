@@ -222,12 +222,12 @@ async def initialize(config_list):
     monitor.start()
 
 def main():
-    config_list = json.load(open('user-config-list.json'))
-    asyncio.ensure_future(initialize(config_list))
+    config = json.load(open('user-config-list.json'))
+    asyncio.ensure_future(initialize(config['servers']))
     app = web.Application()
     app.add_routes(routes)
     try:
-        web.run_app(app)
+        web.run_app(app, port=config.get('port', 1079))
     except Exception as e:
         shell.print_exception(e)
         sys.exit(1)
