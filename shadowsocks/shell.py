@@ -231,7 +231,10 @@ def get_config(is_local):
         print_help(is_local)
         sys.exit(2)
 
-    return normalize_config(config, is_local)
+    try:
+        return normalize_config(config, is_local)
+    except ValueError:
+        sys.exit(2)
 
 def normalize_config(config, is_local):
     config['password'] = to_bytes(config.get('password', b''))
@@ -258,7 +261,7 @@ def normalize_config(config, is_local):
         if config.get('server') is None and config.get('server_list') is None:
             logging.error('server addr not specified')
             print_local_help()
-            sys.exit(2)
+            raise ValueError
         elif config.get('server') is not None:
             config['server'] = to_str(config['server'])
     else:
@@ -268,18 +271,18 @@ def normalize_config(config, is_local):
                 IPNetwork(config.get('forbidden_ip', '127.0.0.0/8,::1/128'))
         except Exception as e:
             logging.error(e)
-            sys.exit(2)
+            raise ValueError
         try:
             config['forbidden_port'] = PortRange(config.get('forbidden_port', ''))
         except Exception as e:
             logging.error(e)
-            sys.exit(2)
+            raise ValueError
         try:
             config['ignore_bind'] = \
                 IPNetwork(config.get('ignore_bind', '127.0.0.0/8,::1/128,10.0.0.0/8,192.168.0.0/16'))
         except Exception as e:
             logging.error(e)
-            sys.exit(2)
+            raise ValueError
     config['server_port'] = config.get('server_port', 8388)
 
     logging.getLogger('').handlers = []

@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>SSR Dashboard</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/spectre.css@0.5.8/dist/spectre.min.css">
+  <script src="https://cdn.jsdelivr.net/npm/vue@2.6.11/dist/vue.min.js"></script>
+</head>
+<body>
+  <div class="container grid-xl p-2">
+    <h1>SSR Dashboard</h1>
+    <div class="mb-2">
+      <button class="btn" @click.prevent="onAdd">Add</button>
+    </div>
+    <div class="columns">
+      <div class="column col-6 col-md-12" v-for="key in keys" :key="key">
+        <div class="card">
+          <div class="card-header">
+            <div class="card-title h5" v-text="key"></div>
+            <div>Port: {{meta[key].config.local_port}}</div>
+            <div>Download: {{formatTransfer(meta[key].tcp_d)}}</div>
+            <div>Upload: {{formatTransfer(meta[key].tcp_u)}}</div>
+            <button class="btn" @click.prevent="onRemove(key)">Remove</button>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="modal active" v-if="modalAdd">
+      <div class="modal-container">
+        <div class="modal-body">
+          <textarea class="form-input" rows="10" v-model="modalAdd.text"></textarea>
+        </div>
+        <div class="modal-footer">
+          <button class="btn" @click.prevent="onConfirmAdd">OK</button>
+          <button class="btn" @click.prevent="modalAdd = null">Cancel</button>
+        </div>
+      </div>
+    </div>
+  </div>
+  <script src="app.js"></script>
+</body>
+</html>

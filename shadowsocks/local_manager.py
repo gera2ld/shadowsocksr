@@ -27,6 +27,7 @@ import json
 import collections
 import sys
 import asyncio
+import mimetypes
 from aiohttp import web
 
 if __name__ == '__main__':
@@ -50,7 +51,11 @@ class Manager:
 
     def add_port(self, raw_config):
         logging.info('add %s' % raw_config)
-        config = shell.normalize_config(raw_config.copy(), True)
+        try:
+            config = shell.normalize_config(raw_config.copy(), True)
+        except ValueError as e:
+            logging.error('invalid config: %s' % e)
+            return
         local_port = int(config['local_port'])
         server = '%s:%d' % (config['server'], config['server_port'])
         servers = self._relays.get(server, None)
@@ -67,6 +72,10 @@ class Manager:
         servers = t, u, raw_config
         self._relays[server] = servers
         self._relays[local_port] = servers
+        self.write({
+            'q': 'added',
+            'd': raw_config,
+        })
 
     def remove_port(self, local_port):
         servers = self._relays.get(local_port)
@@ -74,11 +83,15 @@ class Manager:
             config = servers[0]._config
             server = '%s:%d' % (config['server'], config['server_port'])
             logging.info("removing server at %s, local port %d" % (server, local_port))
-            t, u = servers
+            t, u, _ = servers
             t.close(next_tick=False)
             u.close(next_tick=False)
             del self._relays[server]
             del self._relays[local_port]
+            self.write({
+                'q': 'removed',
+                'd': local_port,
+            })
         else:
             logging.error("server not exist at local port %d" % local_port)
 
@@ -104,12 +117,12 @@ class Manager:
                 }
                 self.write({
                     'q': 'meta',
-                    'r': result,
+                    'd': result,
                 })
         elif data['q'] == 'add':
-            self.add_port(data['p'])
+            self.add_port(data['d'])
         elif data['q'] == 'remove':
-            self.remove_port(data['p'])
+            self.remove_port(data['d'])
         elif data['q'] == 'refreshdns':
             self._dns_resolver._parse_resolv()
             self._dns_resolver._parse_hosts()
@@ -125,9 +138,18 @@ class Manager:
 monitor = None
 
 class MonitorHandler:
-    def __init__(self, pid):
+    def __init__(self, pid, filename):
         self.pid = pid
         self.data = {}
+        self.filename = filename
+        try:
+            self.config = json.load(open(filename))
+        except:
+            self.config = {}
+        self.config.setdefault('servers', [])
+
+    def dump(self):
+        json.dump(self.config, open(self.filename, 'w'), indent=2)
 
     async def initialize(self, r, w):
         loop = asyncio.get_event_loop()
@@ -139,6 +161,11 @@ class MonitorHandler:
         write_transport, _ = await loop.connect_write_pipe(
             lambda: write_protocol, os.fdopen(w, 'w'))
         self.writer = asyncio.StreamWriter(write_transport, write_protocol, None, loop)
+        for config in self.config['servers']:
+            self.write({
+                'q': 'add',
+                'd': config,
+            })
 
     def write(self, data):
         self.writer.write(json.dumps(data).encode())
@@ -154,11 +181,26 @@ class MonitorHandler:
 
     def handle_data(self, data):
         if data['q'] == 'meta':
-            self.data['meta'] = data['r']
+            self.data['meta'] = data['d']
+        elif data['q'] == 'added':
+            for config in self.config['servers']:
+                if config['local_port'] == data['d']['local_port']:
+                    return
+            self.config['servers'].append(data['d'])
+            self.dump()
+        elif data['q'] == 'removed':
+            for i, config in enumerate(self.config['servers']):
+                if config['local_port'] == data['d']:
+                    break
+            else:
+                i = None
+            if i is not None:
+                del self.config['servers'][i]
+            self.dump()
 
     @staticmethod
-    async def create(pid, r, w):
-        handler = MonitorHandler(pid)
+    async def create(r, w, pid, filename):
+        handler = MonitorHandler(pid, filename)
         await handler.initialize(r, w)
         return handler
 
@@ -181,7 +223,61 @@ class MonitorHandler:
         asyncio.ensure_future(self.refresh_meta())
         asyncio.ensure_future(self.refresh_dns())
 
-def start_manager():
+routes = web.RouteTableDef()
+
+@routes.post('/rpc/query')
+def rpc_query(request):
+    data = monitor.data.copy()
+    data['pid'] = monitor.pid
+    return web.json_response(dict(data=data))
+
+@routes.post('/rpc/add')
+async def rpc_add(request):
+    payload = await request.json()
+    monitor.write({
+        'q': 'add',
+        'd': payload['config'],
+    })
+    raise web.HTTPNoContent
+
+@routes.post('/rpc/remove')
+async def rpc_add(request):
+    payload = await request.json()
+    monitor.write({
+        'q': 'remove',
+        'd': payload['local_port'],
+    })
+    raise web.HTTPNoContent
+
+root_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '../static'))
+
+@routes.get(r'/{pathname:.*}')
+def serve_csv(request):
+    pathname = request.match_info['pathname']
+    if pathname == '':
+        pathname = 'index.html'
+    full_path = f'{root_dir}/{pathname}'
+    try:
+        last_modified_time = os.path.getmtime(full_path)
+        etag = f'W/"{last_modified_time}"'
+        mimetype, _encoding = mimetypes.guess_type(pathname)
+        cache_headers = {
+            'Etag': etag,
+            'Vary': 'Origin',
+        }
+        kw = {
+            'headers': cache_headers,
+            'content_type': mimetype,
+        }
+        if etag in map(str.strip, request.headers.get('If-None-Match', '').split(',')):
+            return web.HTTPNotModified(**kw)
+        raw = open(full_path, 'rb').read()
+        return web.Response(body=raw, **kw)
+    except OSError:
+        raise web.HTTPNotFound
+
+async def initialize():
+    global monitor
     r1, w1 = os.pipe()
     r2, w2 = os.pipe()
     pid = os.fork()
@@ -189,45 +285,17 @@ def start_manager():
         mng = Manager(r1, w2)
         mng.run()
         return
-    return MonitorHandler.create(pid, r2, w1)
-
-routes = web.RouteTableDef()
-
-@routes.get('/rpc/query')
-def rpc_query(request):
-    data = monitor.data.copy()
-    data['pid'] = monitor.pid
-    return web.json_response(dict(data=data))
-
-@routes.get('/rpc/add')
-async def rpc_add(request):
-    payload = await request.post()
-    monitor.write({
-        'q': 'add',
-        'p': payload['config'],
-    })
-    return web.HTTPNoContent
-
-async def initialize(config_list):
-    global monitor
-    future = start_manager()
-    if future is None:
-        return
-    monitor = await future
-    for config in config_list:
-        monitor.write({
-            'q': 'add',
-            'p': config,
-        })
+    monitor = await MonitorHandler.create(r2, w1, pid, 'user-config-list.json')
     monitor.start()
+    return monitor
 
 def main():
-    config = json.load(open('user-config-list.json'))
-    asyncio.ensure_future(initialize(config['servers']))
+    loop = asyncio.get_event_loop()
+    monitor = loop.run_until_complete(initialize())
     app = web.Application()
     app.add_routes(routes)
     try:
-        web.run_app(app, port=config.get('port', 1079))
+        web.run_app(app, port=monitor.config.get('port', 1079))
     except Exception as e:
         shell.print_exception(e)
         sys.exit(1)
