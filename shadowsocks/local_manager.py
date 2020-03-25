@@ -110,6 +110,9 @@ class Manager:
             self.add_port(data['p'])
         elif data['q'] == 'remove':
             self.remove_port(data['p'])
+        elif data['q'] == 'refreshdns':
+            self._dns_resolver._parse_resolv()
+            self._dns_resolver._parse_hosts()
 
     def write(self, data):
         self.w.write(json.dumps(data))
@@ -159,12 +162,24 @@ class MonitorHandler:
         await handler.initialize(r, w)
         return handler
 
-    async def refresh(self):
+    async def refresh_meta(self):
         while True:
             await asyncio.sleep(2)
             self.write({
                 'q': 'meta',
             })
+
+    async def refresh_dns(self):
+        while True:
+            await asyncio.sleep(60)
+            self.write({
+                'q': 'refreshdns',
+            })
+
+    def start(self):
+        asyncio.ensure_future(self.handle())
+        asyncio.ensure_future(self.refresh_meta())
+        asyncio.ensure_future(self.refresh_dns())
 
 def start_manager():
     r1, w1 = os.pipe()
@@ -204,8 +219,7 @@ async def initialize(config_list):
             'q': 'add',
             'p': config,
         })
-    asyncio.ensure_future(monitor.handle())
-    asyncio.ensure_future(monitor.refresh())
+    monitor.start()
 
 def main():
     config_list = json.load(open('user-config-list.json'))
