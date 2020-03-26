@@ -29,12 +29,12 @@ async function delay(time) {
 
 new Vue({
   data: {
-    keys: null,
-    meta: null,
+    servers: null,
     modalAdd: null,
   },
   methods: {
     formatTransfer(bytes) {
+      if (isNaN(bytes)) return '-';
       const formatFraction = num => {
         if (num < 10) return num.toFixed(2);
         return Math.floor(num);
@@ -49,8 +49,10 @@ new Vue({
       while (true) {
         try {
           const data = await query();
-          this.meta = data.meta;
-          this.keys = Object.keys(data.meta).sort();
+          this.servers = data.config.servers.map(item => ({
+            ...item,
+            meta: data.meta[item.key] || {},
+          }));
         } catch {
           // noop
         }
@@ -67,11 +69,11 @@ new Vue({
       await rpc('add', { config });
       this.modalAdd = null;
     },
+    async onToggle(key, enabled) {
+      await rpc('toggle', { key, enabled });
+    },
     async onRemove(key) {
-      const localPort = this.meta[key].config.local_port;
-      await rpc('remove', {
-        local_port: localPort,
-      });
+      await rpc('remove', { key });
     },
   },
   async created() {

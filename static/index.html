@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>SSR Dashboard</title>
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/spectre.css@0.5.8/dist/spectre.min.css">
+  <link rel="stylesheet" href="style.css">
   <script src="https://cdn.jsdelivr.net/npm/vue@2.6.11/dist/vue.min.js"></script>
 </head>
 <body>
@@ -13,15 +14,17 @@
     <div class="mb-2">
       <button class="btn" @click.prevent="onAdd">Add</button>
     </div>
-    <div class="columns">
-      <div class="column col-6 col-md-12" v-for="key in keys" :key="key">
-        <div class="card">
-          <div class="card-header">
-            <div class="card-title h5" v-text="key"></div>
-            <div>Port: {{meta[key].config.local_port}}</div>
-            <div>Download: {{formatTransfer(meta[key].tcp_d)}}</div>
-            <div>Upload: {{formatTransfer(meta[key].tcp_u)}}</div>
-            <button class="btn" @click.prevent="onRemove(key)">Remove</button>
+    <div>
+      <div class="card mb-2 mr-2" v-for="item in servers" :key="item.key">
+        <div class="card-header">
+          <div class="card-title h5" v-text="item.key"></div>
+          <div>Port: {{item.config.local_port}}</div>
+          <div>Download: {{formatTransfer(item.meta.tcp_d)}}</div>
+          <div>Upload: {{formatTransfer(item.meta.tcp_u)}}</div>
+          <div class="mt-2">
+            <button v-if="item.enabled" class="btn" @click.prevent="onToggle(item.key, false)">Disable</button>
+            <button v-else class="btn" @click.prevent="onToggle(item.key, true)">Enable</button>
+            <button class="btn" @click.prevent="onRemove(item.key)">Remove</button>
           </div>
         </div>
       </div>

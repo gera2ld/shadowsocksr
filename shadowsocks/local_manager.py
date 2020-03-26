@@ -37,6 +37,9 @@ if __name__ == '__main__':
 
 from shadowsocks import common, eventloop, tcprelay, udprelay, asyncdns, shell
 
+def get_key_from_config(config):
+    return '%s:%d' % (config['server'], config['server_port'])
+
 class Manager:
 
     def __init__(self, r, w):
@@ -51,13 +54,9 @@ class Manager:
 
     def add_port(self, raw_config):
         logging.info('add %s' % raw_config)
-        try:
-            config = shell.normalize_config(raw_config.copy(), True)
-        except ValueError as e:
-            logging.error('invalid config: %s' % e)
-            return
+        config = shell.normalize_config(raw_config.copy(), True)
         local_port = int(config['local_port'])
-        server = '%s:%d' % (config['server'], config['server_port'])
+        server = get_key_from_config(config)
         servers = self._relays.get(server, None)
         if servers:
             logging.error("remote server already exists: %s" % server)
@@ -72,38 +71,50 @@ class Manager:
         servers = t, u, raw_config
         self._relays[server] = servers
         self._relays[local_port] = servers
-        self.write({
-            'q': 'added',
-            'd': raw_config,
-        })
 
     def remove_port(self, local_port):
         servers = self._relays.get(local_port)
         if servers:
             config = servers[0]._config
-            server = '%s:%d' % (config['server'], config['server_port'])
+            server = get_key_from_config(config)
             logging.info("removing server at %s, local port %d" % (server, local_port))
             t, u, _ = servers
             t.close(next_tick=False)
             u.close(next_tick=False)
             del self._relays[server]
             del self._relays[local_port]
-            self.write({
-                'q': 'removed',
-                'd': local_port,
-            })
+            return True
         else:
             logging.error("server not exist at local port %d" % local_port)
+            return False
+
+    def create_callback(self, req):
+        called = False
+        def callback(data=None):
+            nonlocal called
+            qi = req['qi']
+            if called or qi is None: return
+            self.write({
+                'qi': qi,
+                'q': req['q'],
+                'd': data,
+            })
+            called = True
+        return callback
 
     def handle_event(self, sock, fd, event):
         if sock == self.r:
             while True:
                 line = self.r.readline().strip()
                 if not line: break
-                self.handle_data(json.loads(line))
+                req = json.loads(line)
+                callback = self.create_callback(req)
+                self.handle_data(req['q'], req.get('d'), callback)
+                callback()
 
-    def handle_data(self, data):
-        if data['q'] == 'meta':
+    def handle_data(self, q, d, callback):
+        logging.debug('manager: %s %s' % (q, json.dumps(d)))
+        if q == 'meta':
             result = {}
             for server, (t, u, config) in self._relays.items():
                 if isinstance(server, int):
@@ -115,15 +126,19 @@ class Manager:
                     'tcp_uu': t.server_user_transfer_ul,
                     'tcp_ud': t.server_user_transfer_dl,
                 }
-                self.write({
-                    'q': 'meta',
-                    'd': result,
-                })
-        elif data['q'] == 'add':
-            self.add_port(data['d'])
-        elif data['q'] == 'remove':
-            self.remove_port(data['d'])
-        elif data['q'] == 'refreshdns':
+                callback(result)
+        elif q == 'add':
+            config = d
+            try:
+                self.add_port(config)
+            except ValueError as e:
+                logging.error('invalid config: %s' % e)
+                callback(False)
+            else:
+                callback(True)
+        elif q == 'remove':
+            callback(self.remove_port(d))
+        elif q == 'refreshdns':
             self._dns_resolver._parse_resolv()
             self._dns_resolver._parse_hosts()
 
@@ -146,7 +161,10 @@ class MonitorHandler:
             self.config = json.load(open(filename))
         except:
             self.config = {}
-        self.config.setdefault('servers', [])
+        self.config.setdefault('verbose', False)
+        for item in self.config.setdefault('servers', []):
+            item.pop('verbose', None)
+            item.setdefault('key', get_key_from_config(item['config']))
 
     def dump(self):
         json.dump(self.config, open(self.filename, 'w'), indent=2)
@@ -161,15 +179,34 @@ class MonitorHandler:
         write_transport, _ = await loop.connect_write_pipe(
             lambda: write_protocol, os.fdopen(w, 'w'))
         self.writer = asyncio.StreamWriter(write_transport, write_protocol, None, loop)
-        for config in self.config['servers']:
-            self.write({
-                'q': 'add',
-                'd': config,
-            })
+        asyncio.ensure_future(self.initialize_servers())
+
+    async def initialize_servers(self):
+        for item in self.config['servers']:
+            if item['enabled']:
+                config = item['config'].copy()
+                if not await self.add_config(config):
+                    item['enabled'] = False
+        self.dump()
 
     def write(self, data):
         self.writer.write(json.dumps(data).encode())
         self.writer.write(b'\n')
+
+    _id = 0
+    futures = {}
+    def send_message(self, q, d=None):
+        self._id += 1
+        qi = self._id
+        data = {
+            'qi': qi,
+            'q': q,
+            'd': d,
+        }
+        future = asyncio.Future()
+        self.futures[qi] = future
+        self.write(data)
+        return future
 
     async def handle(self):
         while True:
@@ -180,23 +217,13 @@ class MonitorHandler:
             self.handle_data(data)
 
     def handle_data(self, data):
-        if data['q'] == 'meta':
-            self.data['meta'] = data['d']
-        elif data['q'] == 'added':
-            for config in self.config['servers']:
-                if config['local_port'] == data['d']['local_port']:
-                    return
-            self.config['servers'].append(data['d'])
-            self.dump()
-        elif data['q'] == 'removed':
-            for i, config in enumerate(self.config['servers']):
-                if config['local_port'] == data['d']:
-                    break
-            else:
-                i = None
-            if i is not None:
-                del self.config['servers'][i]
-            self.dump()
+        qi = data.pop('qi')
+        if qi is not None:
+            future = self.futures.pop(qi)
+            if future is None:
+                return
+            future.set_result(data['d'])
+            return
 
     @staticmethod
     async def create(r, w, pid, filename):
@@ -207,21 +234,58 @@ class MonitorHandler:
     async def refresh_meta(self):
         while True:
             await asyncio.sleep(2)
-            self.write({
-                'q': 'meta',
-            })
+            meta = await self.send_message('meta')
+            self.data['meta'] = meta
 
     async def refresh_dns(self):
         while True:
             await asyncio.sleep(60)
-            self.write({
-                'q': 'refreshdns',
-            })
+            await self.send_message('refreshdns')
 
     def start(self):
         asyncio.ensure_future(self.handle())
         asyncio.ensure_future(self.refresh_meta())
         asyncio.ensure_future(self.refresh_dns())
+
+    async def add_config(self, config):
+        config = config.copy()
+        config['verbose'] = self.config['verbose']
+        return await self.send_message('add', config)
+
+    async def remove_config(self, config):
+        return await self.send_message('remove', config['local_port'])
+
+    async def add(self, config):
+        item = {
+            'key': get_key_from_config(config),
+            'enabled': True,
+            'config': config,
+        }
+        self.config['servers'].append(item)
+        item['enabled'] = await self.add_config(config)
+        self.dump()
+        return item['enabled']
+
+    async def toggle(self, key, enabled):
+        for item in self.config['servers']:
+            if key == item['key']:
+                do_toggle = self.remove_config if item['enabled'] else self.add_config
+                if await do_toggle(item['config']):
+                    item['enabled'] = not item['enabled']
+                    self.dump()
+                return item['enabled']
+
+    async def remove(self, key):
+        for i, item in enumerate(self.config['servers']):
+            if key == item['key']:
+                if await self.remove_config(item['config']):
+                    item['enabled'] = False
+                break
+        else:
+            i = None
+        if i is not None and not self.config['servers'][i]['enabled']:
+            del self.config['servers'][i]
+            self.dump()
 
 routes = web.RouteTableDef()
 
@@ -229,25 +293,26 @@ routes = web.RouteTableDef()
 def rpc_query(request):
     data = monitor.data.copy()
     data['pid'] = monitor.pid
+    data['config'] = monitor.config
     return web.json_response(dict(data=data))
 
 @routes.post('/rpc/add')
 async def rpc_add(request):
     payload = await request.json()
-    monitor.write({
-        'q': 'add',
-        'd': payload['config'],
-    })
-    raise web.HTTPNoContent
+    data = await monitor.add(payload['config'])
+    return web.json_response(dict(data=data))
+
+@routes.post('/rpc/toggle')
+async def rpc_toggle(request):
+    payload = await request.json()
+    data = await monitor.toggle(payload['key'], payload['enabled'])
+    return web.json_response(dict(data=data))
 
 @routes.post('/rpc/remove')
-async def rpc_add(request):
+async def rpc_remove(request):
     payload = await request.json()
-    monitor.write({
-        'q': 'remove',
-        'd': payload['local_port'],
-    })
-    raise web.HTTPNoContent
+    data = await monitor.remove(payload['key'])
+    return web.json_response(dict(data=data))
 
 root_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '../static'))
 
