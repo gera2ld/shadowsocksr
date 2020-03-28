@@ -278,7 +278,7 @@ class MonitorHandler:
     async def remove(self, key):
         for i, item in enumerate(self.config['servers']):
             if key == item['key']:
-                if await self.remove_config(item['config']):
+                if item['enabled'] and await self.remove_config(item['config']):
                     item['enabled'] = False
                 break
         else:
